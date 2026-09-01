@@ -319,7 +319,9 @@ Let's export a few variables to make things easier. These variables will stay in
 [source,sh,subs="attributes",role=execute]
 ----
 echo export QUAY_USER={quay_admin_username} >> ~/.bashrc
+echo export QUAY_PASSWORD='{quay_admin_password}' >> ~/.bashrc
 QUAY_USER={quay_admin_username}
+QUAY_PASSWORD='{quay_admin_password}'
 ----
 
 [start=2]
@@ -354,7 +356,7 @@ quay-bq65l.apps.cluster-bq65l.bq65l.sandbox209.opentlc.com
 
 [source,sh,subs="attributes",role=execute]
 ----
-podman login $QUAY_URL -u $QUAY_USER -p {quay_admin_password}
+podman login $QUAY_URL -u $QUAY_USER -p "$QUAY_PASSWORD"
 ----
 
 NOTE: Use the quay admin credentials to sign in if you run into issues.
@@ -381,20 +383,22 @@ Beautiful! We're logged in. Now you can download, build, and push images directl
 
 Imagine a base image as a blank canvas, providing a reliable foundation like a minimal operating system or runtime environment. Developers add the essential configurations, libraries, and tools needed to fit their application's unique demands. By tagging this customized creation as a golden image, developers ensure every deployment uses the same standardized, consistent setup, simplifying workflows and avoiding unexpected surprises.
 
+NOTE: Pull *Debian* `python:3.12-slim-bookworm`, not Alpine and not `node:*`. The patient-portal frontend is Python (`main.py` / pip), so a Node base cannot build it. Alpine images make Quay/Clair report Passed or Unknown-only (no severity). Debian's tracker gives Clair real Low/Medium/High/Critical on this image.
+
 *Procedure*
 
 . Run the following commands in succession:
 
 [source,sh,subs="attributes",role=execute]
 ----
-podman pull python:3.12-alpine
+podman pull python:3.12-slim-bookworm
 ----
 
 [.console-output]
 [source,bash,subs="+macros,+attributes"]
 ----
-[demo-user@bastion ~]$ podman pull python:3.12-alpine
-Trying to pull docker.io/library/python:3.12-alpine...
+[demo-user@bastion ~]$ podman pull python:3.12-slim-bookworm
+Trying to pull docker.io/library/python:3.12-slim-bookworm...
 Getting image source signatures
 Copying blob e846654b130a skipped: already exists
 Copying blob 00bb69fc5235 skipped: already exists
@@ -406,12 +410,12 @@ Writing manifest to image destination
 ----
 
 ====
-This command tags the python:3.12-alpine image with your Quay repository and username, allowing you to accurately push the image in a later step.
+This command tags the Debian Python image with your Quay repository and username, allowing you to accurately push the image in a later step.
 ====
 
 [source,sh,subs="attributes",role=execute]
 ----
-podman tag docker.io/library/python:3.12-alpine $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1
+podman tag docker.io/library/python:3.12-slim-bookworm $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1
 ----
 
 ====
@@ -428,8 +432,8 @@ podman images
 ----
 [demo-user@bastion ~]$ podman images
 REPOSITORY                                                                                  TAG          IMAGE ID      CREATED      SIZE
-quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden  0.1          451fdb03e172  5 weeks ago  50.6 MB
-docker.io/library/python                                                                    3.12-alpine  451fdb03e172  5 weeks ago  50.6 MB
+quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden  0.1                  451fdb03e172  5 weeks ago  50.6 MB
+docker.io/library/python                                                                    3.12-slim-bookworm  451fdb03e172  5 weeks ago  50.6 MB
 ----
 
 ====
@@ -531,11 +535,13 @@ ENTRYPOINT ["python", "main.py"]
 
 
 [start=3]
-. Update the `FROM` statement in the Dockerfile to reference a custom base image hosted in a private registry, using `sed` to modify the line:
+. Point both `FROM` lines at your golden image, and switch the Alpine `apk`/`adduser` lines to Debian `apt`/`useradd` (the stock demo-apps Dockerfile is still Alpine):
 
 [source,sh,subs="attributes",role=execute]
 ----
-sed -i "s|^FROM python:3\.12-alpine AS \(\w\+\)|FROM $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1 AS \1|" $TUTORIAL_HOME/app-images/frontend/Dockerfile
+sed -i "s|^FROM python:3\.12-alpine[^ ]* AS \(\w\+\)|FROM $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1 AS \1|" $TUTORIAL_HOME/app-images/frontend/Dockerfile
+sed -i 's|apk add --no-cache bash|apt-get update \&\& apt-get install -y --no-install-recommends bash \&\& rm -rf /var/lib/apt/lists/*|' $TUTORIAL_HOME/app-images/frontend/Dockerfile
+sed -i 's|adduser -S fritz -G root|useradd -r -g root -d /home/fritz -m fritz|' $TUTORIAL_HOME/app-images/frontend/Dockerfile
 ----
 
 [start=4]
@@ -552,7 +558,7 @@ cat $TUTORIAL_HOME/app-images/frontend/Dockerfile
 [demo-user@bastion ~]$ cat $TUTORIAL_HOME/app-images/frontend/Dockerfile
 FROM quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden:0.1 AS build
 
-RUN pip install --no-cache-dir
+RUN apt-get update && apt-get install -y --no-install-recommends bash && rm -rf /var/lib/apt/lists/*
 
 ....
 ----
@@ -602,9 +608,9 @@ Copying config 46ea42cba3 done   |
 Writing manifest to image destination
 ----
 
-NOTE: Quay will automatically create a private registry to store the application image because of your admin access.
+NOTE: Quay will automatically create a private repository to store the application image because of your admin access.
 
-The frontend application is finally built! The next step is to review it in Quay and deploy it to OpenShift using ACM and OpenShift GitOps.
+The frontend application is finally built. Next you will review it in the Quay UI, make the repositories public so the cluster can pull them, and scan the image with RHACS.
 
 [[quay]]
 
@@ -618,8 +624,6 @@ Your Red Hat Quay console is available at: {quay_console_url}[window=blank]
 
 Administrator login is available with:
 
-[source,sh,subs="attributes",role=execute]
-
 [cols="1,1"]
 |===
 | *Quay Console Username:* | {quay_admin_username}
@@ -630,13 +634,11 @@ Administrator login is available with:
 
 === Browse the Registry
 
-In the setup module, you downloaded, built, and pushed an insecure Java application called *frontend*. Now it's time to deploy it to the OpenShift Cluster. To do this, you will need to make the registry that you created public.
-
-Let's take a look at our application in the registry.
+The patient-portal deployment pulls `frontend:0.1` from your in-cluster Quay with no pull secret. New repositories are **private** by default — make them public in the UI before you deploy.
 
 *Procedure*
 
-. First, click on the *frontend* repository.
+. Click the *frontend* repository.
 
 image::00-quay-login.png[link=self, window=blank, width=100%]
 
@@ -660,22 +662,19 @@ image::00-quay-sidebar.png[link=self, window=blank, width=100%]
 - Usage Logs
 - Settings
 
-
 [start=2]
 . Click on the *Tags* icon.
 
 image::00-quay-tags.png[link=self, window=blank, width=100%]
 
-This tab displays all of the images and tags that have been uploaded, providing information such as fixable vulnerabilities, the image size, and allows for bulk changes to images based on the security posture.
-
-We will explore this tab a little later in this module.
+This tab lists the images and tags that have been uploaded, including size and security-scan status. You will scan this image with RHACS in the next section.
 
 [start=3]
-. Click on the *Tags History* icon.
+. Click on the *Tag History* icon.
 
 image::00-quay-history.png[link=self, window=blank, width=100%]
 
-This tab simply displays the container image history over time.
+This tab displays the container image history over time.
 
 [start=4]
 . Click into the SHA256 hash number.
@@ -687,27 +686,26 @@ From this dashboard, you will be able to see the image manifest of that containe
 image::00-image-manifest.png[link=self, window=blank, width=100%]
 
 [start=5]
-. Click the *BACK* icon in the top left of the dashboard then click on the *Usage Logs* icon.
+. Click the *BACK* icon in the top left of the dashboard, then click the *Usage Logs* icon.
 
 image::00-quay-back.png[link=self, window=blank, width=100%]
 image::00-quay-usage.png[link=self, window=blank, width=100%]
 
-
-This tab displays the usage over time along with details about who/how the images were pushed to the cluster.
+This tab displays usage over time and who pushed images to the repository.
 
 ====
 You should see that you (the "quayadmin") pushed an image tagged 0.1 to the repository today.
 ====
 
 [start=6]
-. Lastly click on the *Settings* icon.
+. Click the *Settings* icon.
 
 image::00-quay-settings.png[link=self, window=blank, width=100%]
 
-In this tab, you can add/remove users and update permissions, alter the privacy of the repository, and even schedule alerts based on found vulnerabilities.
+In this tab you can add or remove users, change repository visibility, and configure notification settings.
 
 [start=7]
-. Make your repository public before deploying our application in the next step by clicking the *Make Public* button under *Repository Visibility*:
+. Under *Repository Visibility*, click *Make Public*:
 
 image::00-quay-public.png[link=self, window=blank, width=100%]
 
@@ -716,67 +714,48 @@ image::00-quay-public.png[link=self, window=blank, width=100%]
 
 image::00-quay-public-yes.png[link=self, window=blank, width=100%]
 
+[start=9]
+. Repeat *Settings → Make Public* for the *python-alpine-golden* repository. Later modules import that golden base the same way.
+
 [[vulnerability-scanning-with-quay]]
 
-IMPORTANT: You will need to make your repository public before deploying our application in the next step by clicking the *Make Public* button under *Repository Visibility*.
+IMPORTANT: The Skupper deploy later in this module pulls `$QUAY_URL/$QUAY_USER/frontend:0.1` with no image pull secret. If *frontend* is still private, those pods stay in `ImagePullBackOff`.
 
+=== Scan the image with RHACS
 
-=== Vulnerability Scanning with Quay
-
-Red Hat Quay can also help with securing our environments by performing a container vulnerability scan on any images added to our registry and advising which ones are potentially fixable. This feature is also known as vulnerability scanning at rest.
-
-Use the following procedure to check the security scan results for our Java container image you have uploaded.
+RHACS pulls the image manifest from Quay and reports OS and language vulnerabilities (including the intentionally old Python packages in the Dockerfile).
 
 *Procedure*
 
-. Click on the *Tags* icon on the left side of the screen like before.
-
-image::00-quay-tags.png[link=self, window=blank, width=100%]
-
-NOTE: You may need to click the checkbox near the image you would like more information on, but the column for *Security Scan* should populate.
-
-[start=2]
-. By default, the security scan color codes the vulnerabilities, you can hover over the security scan for more information.
-
-image::00-quay-scan-hover.png[link=self, window=blank, width=100%]
-
-NOTE: The Alpine container image you are using in this lab shows 34 vulnerabilities, with 2 critical vulnerabilities. This number will change with time and will be different between container scanners for a variety of reasons such as reporting mechanisms, vulnerability feeds, and operating system support.
-
-[start=3]
-. Click on the list of vulnerabilities to see a more detailed view.
-
-image::00-quay-vuln-overview.png[link=self, window=blank, width=100%]
-
-[start=4]
-. Click on a vulnerable package on the left menu to get more information about the vulnerability and see what you have to do to fix the issue.
-
-image::00-quay-vuln-detailed.png[link=self, window=blank, width=100%]
-
-NOTE: Toggling for fixable/unfixable vulnerabilities is an excellent way for developers to understand what is within their responsibility for fixing. For example, since you are using an older version of Java, many fixes are available for these common issues.
-
-=== Ensure ACS Can Pull the Image Manifest from Your Quay Instance
-
-*Procedure*
-
-Run the following command to test the RHACS/Quay integration:
+. Run the following command:
 
 [source,sh,subs="attributes",role=execute]
 ----
 roxctl --insecure-skip-tls-verify -e "$ROX_CENTRAL_ADDRESS:443" image scan --image=$QUAY_URL/$QUAY_USER/frontend:0.1 --force -o table
 ----
 
-TIP: The following output can be configured using flags. You can configure different outputs (table, CSV, JSON, and sarif) and filter for specific severities.
+TIP: You can change the output with `-o table|csv|json|sarif` and filter with `--severity CRITICAL,IMPORTANT`.
 
 [.console-output]
 [source,bash,subs="+macros,+attributes"]
 ----
-.
-.
-+----------+---------------+
-|             |           | GHSA-r64q-w8jr-g9qp |    LOW    |  0   |                  https://github.com/urllib3/urllib3/issues/1553                  |    1.24.3     |    -     |       -       |
-+-------------+-----------+---------------------+-----------+------+----------------------------------------------------------------------------------+---------------+----------+---------------+
-WARN:   A total of 43 unique vulnerabilities were found in 8 components
+Scan results for image: quay-4jkpw.apps.cluster-4jkpw.4jkpw.sandbox3819.opentlc.com/quayadmin/frontend:0.1
+(TOTAL-COMPONENTS: 60, TOTAL-VULNERABILITIES: 171, LOW: 106, MODERATE: 34, IMPORTANT: 23, CRITICAL: 8)
+
++---------------+----------------------+------------------+-----------+------+
+|   COMPONENT   |       VERSION        |       CVE        | SEVERITY  | CVSS |
++---------------+----------------------+------------------+-----------+------+
+|    django     |        1.11.29       |  CVE-2025-64459  | CRITICAL  | 9.1  |
+| libsqlite3-0  |    3.40.1-2+deb12u2  |   CVE-2025-7458  | CRITICAL  | 9.1  |
+|   perl-base   |    5.36.0-7+deb12u3  |   CVE-2026-8376  | CRITICAL  | 9.8  |
+|    pyyaml     |         3.12         |  CVE-2020-14343  | CRITICAL  | 9.8  |
+|    zlib1g     |   1:1.2.13.dfsg-1    |  CVE-2023-45853  | CRITICAL  | 9.8  |
+|     flask     |          0.5         |  CVE-2023-30861  | IMPORTANT | 7.5  |
++---------------+----------------------+------------------+-----------+------+
+WARN:   A total of 171 unique vulnerabilities were found in 60 components
 ----
+
+NOTE: Counts change as vulnerability feeds update. You should see **Critical** findings on the packages the Dockerfile installed for the lab (`Django==1.11.29`, `PyYAML==3.12`) plus Debian Bookworm libraries from the golden base (`perl-base`, `zlib1g`, `libsqlite3-0`). `Flask==0.5` shows as **Important**. That is the scanner later modules use for policy and reporting.
 
 === Deploy Your Newly Built Application
 
