@@ -383,7 +383,7 @@ Beautiful! We're logged in. Now you can download, build, and push images directl
 
 Imagine a base image as a blank canvas, providing a reliable foundation like a minimal operating system or runtime environment. Developers add the essential configurations, libraries, and tools needed to fit their application's unique demands. By tagging this customized creation as a golden image, developers ensure every deployment uses the same standardized, consistent setup, simplifying workflows and avoiding unexpected surprises.
 
-NOTE: Pull *Debian* `python:3.12-slim-bookworm`, not Alpine and not `node:*`. The patient-portal frontend is Python (`main.py` / pip), so a Node base cannot build it. Alpine images make Quay/Clair report Passed or Unknown-only (no severity). Debian's tracker gives Clair real Low/Medium/High/Critical on this image.
+NOTE: Pull *Alpine* `python:3.12-alpine3.20`, not floating `python:3.12-alpine`. Later modules run `apk` in the frontend pod, so the image must include `apk-tools`. The floating tag currently tracks Alpine 3.24, which Quay/Clair often marks as Passed.
 
 *Procedure*
 
@@ -391,14 +391,14 @@ NOTE: Pull *Debian* `python:3.12-slim-bookworm`, not Alpine and not `node:*`. Th
 
 [source,sh,subs="attributes",role=execute]
 ----
-podman pull python:3.12-slim-bookworm
+podman pull python:3.12-alpine3.20
 ----
 
 [.console-output]
 [source,bash,subs="+macros,+attributes"]
 ----
-[demo-user@bastion ~]$ podman pull python:3.12-slim-bookworm
-Trying to pull docker.io/library/python:3.12-slim-bookworm...
+[demo-user@bastion ~]$ podman pull python:3.12-alpine3.20
+Trying to pull docker.io/library/python:3.12-alpine3.20...
 Getting image source signatures
 Copying blob e846654b130a skipped: already exists
 Copying blob 00bb69fc5235 skipped: already exists
@@ -410,12 +410,12 @@ Writing manifest to image destination
 ----
 
 ====
-This command tags the Debian Python image with your Quay repository and username, allowing you to accurately push the image in a later step.
+This command tags the python:3.12-alpine3.20 image with your Quay repository and username, allowing you to accurately push the image in a later step.
 ====
 
 [source,sh,subs="attributes",role=execute]
 ----
-podman tag docker.io/library/python:3.12-slim-bookworm $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1
+podman tag docker.io/library/python:3.12-alpine3.20 $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1
 ----
 
 ====
@@ -432,8 +432,8 @@ podman images
 ----
 [demo-user@bastion ~]$ podman images
 REPOSITORY                                                                                  TAG          IMAGE ID      CREATED      SIZE
-quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden  0.1                  451fdb03e172  5 weeks ago  50.6 MB
-docker.io/library/python                                                                    3.12-slim-bookworm  451fdb03e172  5 weeks ago  50.6 MB
+quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden  0.1           451fdb03e172  5 weeks ago  50.6 MB
+docker.io/library/python                                                                    3.12-alpine3.20  451fdb03e172  5 weeks ago  50.6 MB
 ----
 
 ====
@@ -535,13 +535,11 @@ ENTRYPOINT ["python", "main.py"]
 
 
 [start=3]
-. Point both `FROM` lines at your golden image, and switch the Alpine `apk`/`adduser` lines to Debian `apt`/`useradd` (the stock demo-apps Dockerfile is still Alpine):
+. Update the `FROM` statement in the Dockerfile to reference your golden image in Quay:
 
 [source,sh,subs="attributes",role=execute]
 ----
 sed -i "s|^FROM python:3\.12-alpine[^ ]* AS \(\w\+\)|FROM $QUAY_URL/$QUAY_USER/python-alpine-golden:0.1 AS \1|" $TUTORIAL_HOME/app-images/frontend/Dockerfile
-sed -i 's|apk add --no-cache bash|apt-get update \&\& apt-get install -y --no-install-recommends bash \&\& rm -rf /var/lib/apt/lists/*|' $TUTORIAL_HOME/app-images/frontend/Dockerfile
-sed -i 's|adduser -S fritz -G root|useradd -r -g root -d /home/fritz -m fritz|' $TUTORIAL_HOME/app-images/frontend/Dockerfile
 ----
 
 [start=4]
@@ -558,7 +556,8 @@ cat $TUTORIAL_HOME/app-images/frontend/Dockerfile
 [demo-user@bastion ~]$ cat $TUTORIAL_HOME/app-images/frontend/Dockerfile
 FROM quay-w2t4c.apps.cluster-w2t4c.w2t4c.sandbox1647.opentlc.com/quayadmin/python-alpine-golden:0.1 AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends bash && rm -rf /var/lib/apt/lists/*
+# Install Bash and other dependencies
+RUN apk add --no-cache bash
 
 ....
 ----
@@ -667,7 +666,11 @@ image::00-quay-sidebar.png[link=self, window=blank, width=100%]
 
 image::00-quay-tags.png[link=self, window=blank, width=100%]
 
-This tab lists the images and tags that have been uploaded, including size and security-scan status. You will scan this image with RHACS in the next section.
+This tab lists the images and tags that have been uploaded, including size and security-scan status.
+
+Hover over the *Security Scan* column. Clair (Quay's scanner) typically reports on the order of **52 vulnerabilities**, all **Unknown** severity, with patches available. That is expected for this Alpine image — not a failed scan.
+
+NOTE: Quay and RHACS will not agree on this image, and that is not a lab error. Quay uses *Clair*, which matches Alpine packages against Alpine's SecDB. That feed lists CVEs but *does not assign severity*, so Clair reports them as *Unknown*. RHACS Scanner V4 uses OSV/NVD CVSS scores, so the same image shows *Critical* and *Important* findings (for example `Django==1.11.29` and `PyYAML==3.12`). Counts also differ because the products count and classify findings differently. Later modules use the RHACS results for policy and reporting.
 
 [start=3]
 . Click on the *Tag History* icon.
@@ -740,22 +743,21 @@ TIP: You can change the output with `-o table|csv|json|sarif` and filter with `-
 [source,bash,subs="+macros,+attributes"]
 ----
 Scan results for image: quay-4jkpw.apps.cluster-4jkpw.4jkpw.sandbox3819.opentlc.com/quayadmin/frontend:0.1
-(TOTAL-COMPONENTS: 60, TOTAL-VULNERABILITIES: 171, LOW: 106, MODERATE: 34, IMPORTANT: 23, CRITICAL: 8)
+(TOTAL-COMPONENTS: 19, TOTAL-VULNERABILITIES: 80, LOW: 24, MODERATE: 27, IMPORTANT: 25, CRITICAL: 4)
 
-+---------------+----------------------+------------------+-----------+------+
-|   COMPONENT   |       VERSION        |       CVE        | SEVERITY  | CVSS |
-+---------------+----------------------+------------------+-----------+------+
-|    django     |        1.11.29       |  CVE-2025-64459  | CRITICAL  | 9.1  |
-| libsqlite3-0  |    3.40.1-2+deb12u2  |   CVE-2025-7458  | CRITICAL  | 9.1  |
-|   perl-base   |    5.36.0-7+deb12u3  |   CVE-2026-8376  | CRITICAL  | 9.8  |
-|    pyyaml     |         3.12         |  CVE-2020-14343  | CRITICAL  | 9.8  |
-|    zlib1g     |   1:1.2.13.dfsg-1    |  CVE-2023-45853  | CRITICAL  | 9.8  |
-|     flask     |          0.5         |  CVE-2023-30861  | IMPORTANT | 7.5  |
-+---------------+----------------------+------------------+-----------+------+
-WARN:   A total of 171 unique vulnerabilities were found in 60 components
++---------------+------------+------------------+-----------+------+
+|   COMPONENT   |  VERSION   |       CVE        | SEVERITY  | CVSS |
++---------------+------------+------------------+-----------+------+
+|    django     |  1.11.29   |  CVE-2025-64459  | CRITICAL  | 9.1  |
+|  libcrypto3   |  3.3.3-r0  |  CVE-2026-31789  | CRITICAL  | 9.8  |
+|    libssl3    |  3.3.3-r0  |  CVE-2026-31789  | CRITICAL  | 9.8  |
+|    pyyaml     |    3.12    |  CVE-2020-14343  | CRITICAL  | 9.8  |
+|     flask     |    0.5     |  CVE-2023-30861  | IMPORTANT | 7.5  |
++---------------+------------+------------------+-----------+------+
+WARN:   A total of 80 unique vulnerabilities were found in 19 components
 ----
 
-NOTE: Counts change as vulnerability feeds update. You should see **Critical** findings on the packages the Dockerfile installed for the lab (`Django==1.11.29`, `PyYAML==3.12`) plus Debian Bookworm libraries from the golden base (`perl-base`, `zlib1g`, `libsqlite3-0`). `Flask==0.5` shows as **Important**. That is the scanner later modules use for policy and reporting.
+NOTE: Counts change as vulnerability feeds update. You should see **Critical** findings on the packages the Dockerfile installed (`Django==1.11.29`, `PyYAML==3.12`) plus Alpine libraries such as `libcrypto3`/`libssl3`. `Flask==0.5` shows as **Important**. This output will not match the Quay *Security Scan* column: Clair reports those Alpine SecDB hits as *Unknown* and does not apply CVSS the way RHACS does. RHACS is the scanner later modules use for policy and reporting.
 
 === Deploy Your Newly Built Application
 
